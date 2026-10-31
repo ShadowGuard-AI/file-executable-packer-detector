@@ -32,6 +32,9 @@ def setup_argparse():
     return parser
 
 
+NOT_EXECUTABLE = "__not_executable__"
+
+
 def detect_packer(file_path):
     """
     Detects if a file is packed and identifies the packer used.
@@ -40,45 +43,45 @@ def detect_packer(file_path):
         file_path (str): The path to the file to analyze.
 
     Returns:
-        str: The name of the packer if detected, otherwise None.
+        str: The name of the packer if detected, NOT_EXECUTABLE if the
+            file has no MZ or ELF header, otherwise None for an
+            executable with no known signature.
+
+    Raises:
+        ValueError: If the file is empty.
+        OSError: If the file cannot be read.
     """
+    with open(file_path, "rb") as f:
+        data = f.read()
+
+    if not data:
+        raise ValueError(f"File is empty: {file_path}")
+
+    if not (data.startswith(b"MZ") or data.startswith(b"\x7fELF")):
+        return NOT_EXECUTABLE
+
+    for packer, signature in PACKER_SIGNATURES.items():
+        if signature in data:
+            logging.info(f"Detected packer: {packer}")
+            return packer
+
+    # Attempt to use external tools (peid, etc.) as a fallback.  This requires them to be installed.
+    # Example (using 'file' command):
     try:
-        with open(file_path, "rb") as f:
-            header = f.read(4096)  # Read the first 4KB for signature detection
+        result = subprocess.run(['file', file_path], capture_output=True, text=True, check=True)
+        output = result.stdout.lower()
 
-            for packer, signature in PACKER_SIGNATURES.items():
-                if signature in header:
-                    logging.info(f"Detected packer: {packer}")
-                    return packer
-
-        # Attempt to use external tools (peid, etc.) as a fallback.  This requires them to be installed.
-        # Example (using 'file' command):
-        try:
-            result = subprocess.run(['file', file_path], capture_output=True, text=True, check=True)
-            output = result.stdout.lower()
-
-            if "upx" in output:
-                return "UPX (External Tool)"
-            elif "packed" in output:
-                return "Packed (External Tool - Generic)"
-
-        except FileNotFoundError:
-             logging.warning("External file command not found. Install it to improve packer detection.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error running external tool: {e}")
-
-
-        return None
+        if "upx" in output:
+            return "UPX (External Tool)"
+        elif "packed" in output:
+            return "Packed (External Tool - Generic)"
 
     except FileNotFoundError:
-        logging.error(f"File not found: {file_path}")
-        return None
-    except PermissionError:
-        logging.error(f"Permission denied to access file: {file_path}")
-        return None
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        return None
+         logging.warning("External file command not found. Install it to improve packer detection.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error running external tool: {e}")
+
+    return None
 
 
 def main():
@@ -111,13 +114,22 @@ def main():
         
     try:
         packer = detect_packer(str(file_path)) #Convert back to string for detect_packer function
-        if packer:
-            print(f"File is packed with: {packer}")
-        else:
-            print("File is not packed (or packer is not recognized).")
+    except ValueError as e:
+        logging.error(str(e))
+        sys.exit(1)
+    except OSError as e:
+        logging.error(f"Error reading file: {e}")
+        sys.exit(1)
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         sys.exit(1)
+
+    if packer == NOT_EXECUTABLE:
+        print("Packer detection does not apply: file is not a recognized executable (no MZ or ELF header).")
+    elif packer:
+        print(f"File is packed with: {packer}")
+    else:
+        print("File is not packed (or packer is not recognized).")
 
 
 if __name__ == "__main__":
