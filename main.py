@@ -57,10 +57,20 @@ def detect_packer(file_path):
     if not data:
         raise ValueError(f"File is empty: {file_path}")
 
+    # The gate runs before any signature search. Only MZ and ELF files are
+    # considered executables here, so a Mach-O binary or a script gets the
+    # not executable answer even if a packer name sits inside it.
     if not (data.startswith(b"MZ") or data.startswith(b"\x7fELF")):
         return NOT_EXECUTABLE
 
     for packer, signature in PACKER_SIGNATURES.items():
+        # The search is over the whole file, not the header or section table.
+        # A packer name appearing in a string, a resource, or compressed data
+        # counts as a hit, and dict order decides the winner when several
+        # signatures are present: UPX is checked first, so it wins ties. The
+        # three byte signatures are short enough that chance matches in large
+        # files are a real possibility, which is why the external check below
+        # exists as a second opinion, not as the primary.
         if signature in data:
             logging.info(f"Detected packer: {packer}")
             return packer
@@ -68,6 +78,9 @@ def detect_packer(file_path):
     # Attempt to use external tools (peid, etc.) as a fallback.  This requires them to be installed.
     # Example (using 'file' command):
     try:
+        # The fallback runs only when no signature matched, and it reads the
+        # file command's prose, lowercased, for two words. It can confirm UPX
+        # or a generic packed verdict, nothing more specific than that.
         result = subprocess.run(['file', file_path], capture_output=True, text=True, check=True)
         output = result.stdout.lower()
 
@@ -124,6 +137,9 @@ def main():
         logging.error(f"An unexpected error occurred: {e}")
         sys.exit(1)
 
+    # Every detection outcome exits 0, including packed. Only validation
+    # failures and read errors exit 1. A script wrapping this tool has to
+    # parse the printed line to learn the verdict.
     if packer == NOT_EXECUTABLE:
         print("Packer detection does not apply: file is not a recognized executable (no MZ or ELF header).")
     elif packer:
